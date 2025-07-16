@@ -10,7 +10,7 @@ def scrape_historical():
     SWID = '{B2939343-C4CE-4520-9B01-87E084C30314}'
     ESPN_S2 = 'AEA5EHawYmSZ4jmAO701RNO8F%2F93IF3jDDIPKWXMJc4urLQc1G1fxKlkdEo4qsjR5RVlkJE43yoRH1IZsCeGjpqJRJbeu3E6bZ8sE%2Ff1yCgJPKapoIlXEr5HchNkf9%2FsmtlXjpSCn5mbtiHmS5FYBDZSf1PCFGnldkPExDL4ZFjqK36jEZa9BLXv7Fe0%2Fe3pgkWaN1wpy51ClC5uqpfGujkA3vvJvWFJRLYgDEs7O1HRwT%2FUUOL%2F1Y7qK17%2Fnw6ytHwe%2B5Kr4gBbh8ok1yyNB%2B63vDcb5pzlFXZ%2FY%2BiV7ZEOoA%3D%3D'
 
-    for year in range(2021, 2024):
+    for year in range(2021, 2025):
         league = League(league_id=LEAGUEID, year=year, espn_s2=ESPN_S2, swid=SWID)
         all_teams.extend(teams_loader(league))     # returns list of dicts
         all_matchups.extend(matchup_loader(league, year))  # returns list of dicts
@@ -35,20 +35,26 @@ def teams_loader(league):
 
 def matchup_loader(league, year):
     all_matchups = []
+
+    final_standings = {team: team.final_standing for team in league.teams}
     teams_by_name = {team: team.team_name for team in league.teams}
+
+    playoff_teams = set(team for team, standing in final_standings.items() if standing <= 8)
+    alive_playoff_teams = playoff_teams.copy()
 
     for week in range(1, 18):
         try:
             matchups = league.box_scores(week)
         except Exception as e:
-            print(f" Error fetching box scores for season {league.year}, week {week}: {e}")
+            print(f"Error fetching box scores for season {year}, week {week}: {e}")
             continue
+
+        next_alive = set()
+
         for matchup in matchups:
             home_team = matchup.home_team
             away_team = matchup.away_team
 
-            home_name = teams_by_name.get(home_team)
-            away_name = teams_by_name.get(away_team)
             home_last_name = home_team.owners[0]["lastName"].upper()
             away_last_name = away_team.owners[0]["lastName"].upper()
 
@@ -61,8 +67,25 @@ def matchup_loader(league, year):
             away_score = matchup.away_score
             home_proj_score = matchup.home_projected
             away_proj_score = matchup.away_projected
-            is_playoff = matchup.is_playoff
-            
+
+            # Game type logic
+            if week < 15:
+                game_type = "regular"
+            elif week == 15:
+                if home_team in playoff_teams and away_team in playoff_teams:
+                    game_type = "playoff"
+                    winner = home_team if home_score > away_score else away_team
+                    next_alive.add(winner)
+                else:
+                    game_type = "non_playoff"
+            elif week >= 16:
+                if home_team in alive_playoff_teams and away_team in alive_playoff_teams:
+                    game_type = "playoff"
+                    winner = home_team if home_score > away_score else away_team
+                    next_alive.add(winner)
+                else:
+                    game_type = "non_playoff"
+
             entry = {
                 "season": year,
                 "week": week,
@@ -72,12 +95,16 @@ def matchup_loader(league, year):
                 "away_score": away_score,
                 "home_projected": home_proj_score,
                 "away_projected": away_proj_score,
-                "is_playoff": is_playoff
+                "game_type": game_type
             }
 
             all_matchups.append(entry)
-        
+
+        if week in [15, 16]:
+            alive_playoff_teams = next_alive
+
     return all_matchups
+
 
 def drafts_loader(league, year):
     draft_entries = []
@@ -123,7 +150,7 @@ def load_db(db_file, teams, matchups, drafts):
                     home_last_name, away_last_name,
                     home_score, away_score,
                     home_proj_score, away_proj_score,
-                    is_playoffs
+                    game_type
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 matchup["season"],
@@ -134,7 +161,7 @@ def load_db(db_file, teams, matchups, drafts):
                 matchup["away_score"],
                 matchup["home_projected"],
                 matchup["away_projected"],
-                int(matchup["is_playoff"])  # SQLite expects 0 or 1
+                matchup["game_type"]
             ))
         except sqlite3.Error as e:
             print(f"Matchup insert error (Week {matchup['week']}): {e}")

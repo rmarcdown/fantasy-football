@@ -15,7 +15,7 @@ CREATE TABLE matchups (
     away_score REAL,
     home_proj_score REAL,
     away_proj_score REAL,
-    is_playoffs BOOLEAN DEFAULT 0,
+    game_type VARCHAR(256) NOT NULL,
     FOREIGN KEY (home_last_name) REFERENCES teams(lastName),
     FOREIGN KEY (away_last_name) REFERENCES teams(lastName)
 );
