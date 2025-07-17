@@ -134,6 +134,9 @@ def league_history_stats(teams, matchups):
     results["season_points_all"] = season_points_df
     results["max_points_season_per_year"] = top_scorers_per_season
 
+    #6. Record Book
+
+
     #6. Most Points Ever in a Season
     top_scorer_overall = season_points_df.loc[
         season_points_df["points"].idxmax()
@@ -154,7 +157,45 @@ def league_history_stats(teams, matchups):
     max_points_week = weekly_points.loc[max_points_idx]
 
     results["max_points_week"] = max_points_week
-    
+
+    # Record Book Additions
+
+    # Ensure 'wins' column is numeric for correct idxmax
+    team_records_df["wins"] = pd.to_numeric(team_records_df["wins"], errors='coerce')
+
+    # --- Most Wins in a Single Season ---
+    max_wins = team_records_df["wins"].max()
+    most_wins_df = team_records_df[team_records_df["wins"] == max_wins][["season", "team", "wins"]].reset_index(drop=True)
+    results["most_wins_seasons"] = most_wins_df
+
+    # --- Largest Margin of Victory in a Single Game ---
+    matchups["margin"] = abs(matchups["home_score"] - matchups["away_score"])
+    max_margin_game = matchups.loc[matchups["margin"].idxmax()]
+    winner = max_margin_game["home_last_name"] if max_margin_game["home_score"] > max_margin_game["away_score"] else max_margin_game["away_last_name"]
+    loser = max_margin_game["away_last_name"] if winner == max_margin_game["home_last_name"] else max_margin_game["home_last_name"]
+    max_margin_game["winner"] = winner
+    max_margin_game["loser"] = loser
+    results["max_margin_game"] = max_margin_game
+
+    # --- Over/Under Projections by Season ---
+    player_weeks = pd.concat([
+        matchups[["season", "home_last_name", "home_score", "home_proj_score"]].rename(
+            columns={"home_last_name": "team", "home_score": "actual", "home_proj_score": "projected"}
+        ),
+        matchups[["season", "away_last_name", "away_score", "away_proj_score"]].rename(
+            columns={"away_last_name": "team", "away_score": "actual", "away_proj_score": "projected"}
+        )
+    ])
+    player_weeks["over_under"] = player_weeks["actual"] - player_weeks["projected"]
+    seasonal_over_under = (
+        player_weeks.groupby(["season", "team"])["over_under"]
+        .sum()
+        .reset_index()
+    )
+    seasonal_over_under["over_under"] = seasonal_over_under["over_under"].round(2)
+    results["max_over_season"] = seasonal_over_under.loc[seasonal_over_under["over_under"].idxmax()]
+    results["min_over_season"] = seasonal_over_under.loc[seasonal_over_under["over_under"].idxmin()]
+
     return results
 
 def team_profile_tab(teams, matchups):
@@ -237,12 +278,31 @@ def team_profile_tab(teams, matchups):
 
      # --- Weekly Scores ---
     st.header("📈 Weekly Scores Over Time")
+
+    # Calculate team score per game
     team_games["score"] = team_games.apply(
         lambda row: row["home_score"] if row["home_last_name"] == selected_team else row["away_score"], axis=1
     )
-    team_games["week_label"] = team_games["season"].astype(str) + " - Wk " + team_games["matchup_week"].astype(str)
 
-    st.line_chart(team_games.set_index("week_label")["score"])
+    # Create a clean, sortable label
+    team_games["week_label"] = (
+        team_games["season"].astype(str) + " - Wk " + team_games["matchup_week"].astype(str)
+    )
+
+    # Create a sortable index to ensure the correct order
+    team_games["sort_order"] = team_games["season"] * 100 + team_games["matchup_week"]
+
+    # Build Altair chart
+    chart = alt.Chart(team_games).mark_line(point=True).encode(
+        x=alt.X("week_label:N", sort=team_games.sort_values("sort_order")["week_label"].tolist(), title="Week"),
+        y=alt.Y("score:Q", title="Score"),
+        tooltip=["season", "matchup_week", "score"]
+    ).properties(
+        height=300,
+        width="container"
+    )
+
+    st.altair_chart(chart, use_container_width=True)
 
     st.header("🤝 Head-to-Head Record")
     team_games["opponent"] = team_games.apply(
@@ -254,6 +314,78 @@ def team_profile_tab(teams, matchups):
     ).reset_index().sort_values(by="wins", ascending=False)
     st.dataframe(h2h)
 
+     # --- Big Games ---
+    st.header("🔥 Big Games")
+    team_games["margin"] = team_games.apply(
+        lambda row: abs(row["home_score"] - row["away_score"]) if (
+        (row["home_last_name"] == selected_team and row["home_score"] > row["away_score"]) or
+        (row["away_last_name"] == selected_team and row["away_score"] > row["home_score"])
+        ) else 0, axis=1 )
+
+    big_wins = team_games[team_games["margin"] > 0].sort_values(by="margin", ascending=False).head(5)
+    st.dataframe(big_wins[["season", "matchup_week", "home_last_name", "away_last_name", "home_score", "away_score", "margin"]])
+
+    st.header("📊 Total Points For and Against by Season")
+
+    # Compute points for and against per game
+    team_games["points_for"] = team_games.apply(
+        lambda row: row["home_score"] if row["home_last_name"] == selected_team else row["away_score"],
+        axis=1
+    )
+    team_games["points_against"] = team_games.apply(
+        lambda row: row["away_score"] if row["home_last_name"] == selected_team else row["home_score"],
+        axis=1
+    )
+
+    # Group by season and sum points
+    trend_df = team_games.groupby("season").agg(
+        **{
+            "Points For": ("points_for", "sum"),
+            "Points Against": ("points_against", "sum"),
+        }
+    ).reset_index()
+
+    # Make season a string for categorical x-axis
+    trend_df["season"] = trend_df["season"].astype(str)
+
+    # Melt for Altair
+    melted = trend_df.melt(id_vars=["season"], 
+                        value_vars=["Points For", "Points Against"],
+                        var_name="Type", value_name="Total Points")
+
+    # Create a new x-axis category combining season and type for alternating bars
+    melted["season_type"] = melted["season"].astype(str) + " - " + melted["Type"]
+
+    # Set up the order for x-axis so bars alternate in chronological order
+    season_type_order = []
+    for s in sorted(melted["season"].unique()):
+        season_type_order.append(f"{s} - Points For")
+        season_type_order.append(f"{s} - Points Against")
+
+    chart = alt.Chart(melted).mark_bar().encode(
+        x=alt.X("season_type:N", 
+                title="Season and Points Type",
+                sort=season_type_order,
+                axis=alt.Axis(labelAngle=-45)),
+        y=alt.Y("Total Points:Q", title="Total Points"),
+        color=alt.Color("Type:N", scale=alt.Scale(domain=["Points For", "Points Against"],
+                                                range=["#1f77b4", "#ff7f0e"]),
+                        legend=alt.Legend(title="Points Type")),
+        tooltip=[alt.Tooltip("season:N", title="Season"),
+                alt.Tooltip("Type:N", title="Points Type"),
+                alt.Tooltip("Total Points:Q", title="Total Points", format=",")]
+    ).properties(
+        width=700,
+        height=400
+    ).configure_axis(
+        labelFontSize=12,
+        titleFontSize=14
+    ).configure_legend(
+        labelFontSize=12,
+        titleFontSize=14
+    )
+
+    st.altair_chart(chart, use_container_width=True)
 
 def main():
     st.title("Bozwell Fantasy Football Website")
@@ -270,19 +402,19 @@ def main():
         
 
     with tab2:
-        st.subheader("League History")
+        st.header("League History")
         stats = league_history_stats(teams, matchups)
 
-        st.header("Past League Champions")
+        st.subheader("Past League Champions")
         st.table(stats["champions"])
 
-        st.header("Regular Season Winners")
+        st.subheader("Regular Season Winners")
         st.table(stats["one_seeds"][["season", "team", "record", "win_pct"]])
 
-        st.header("Regular Season Losers")
+        st.subheader("Regular Season Losers")
         st.table(stats["sackos"][["season", "team", "record", "win_pct"]])
 
-        st.header("Overall Career Win Percentage")
+        st.subheader("Overall Career Win Percentage")
         chart1 = alt.Chart(stats["overall_win_loss"]).mark_bar().encode(
             x=alt.X('win_pct', title='Win Percentage'),
             y=alt.Y('team', sort='-x', title='Team'),
@@ -290,16 +422,41 @@ def main():
         ).properties(height=400)
         st.altair_chart(chart1, use_container_width=True)
 
-        st.header("Top Scorers Per Season")
+        st.subheader("Top Scorers Per Season")
         st.table(stats["max_points_season_per_year"][["season", "team", "points"]])
 
-        st.header("Most Points Scored in a Single Season (Overall)")
+        st.header("Record Book")
+
+        st.subheader("Most Wins in a Single Season")
+        most_wins_df = stats["most_wins_seasons"]
+
+        if most_wins_df.empty:
+            st.write("No data available.")
+        else:
+            st.dataframe(most_wins_df)
+
+        st.subheader("Most Points Scored in a Single Season (Overall)")
         max_season = stats["max_points_season_overall"]
         st.write(f"{max_season['team']} scored {max_season['points']} points in {max_season['season']}")
 
-        st.header("Most Points Scored in a Single Week")
+        st.subheader("Most Points Scored in a Single Week")
         max_week = stats["max_points_week"]
         st.write(f"{max_week['team']} scored {max_week['points']} points in Week {max_week['matchup_week']}, {max_week['season']}")
+
+        st.subheader("Largest Margin of Victory in a Single Game")
+        max_game = stats["max_margin_game"]
+        st.write(
+            f"{max_game['winner']} defeated {max_game['loser']} by {max_game['margin']} points "
+            f"in Week {max_game['matchup_week']} of {max_game['season']}"
+        )
+
+        st.subheader("Highest Single Season Overperformance of ESPN Projections")
+        over = stats["max_over_season"]
+        st.write(f"{over['team']} outperformed projections by {over['over_under']} points in {over['season']}")
+
+        st.subheader("Highest Single Season Underperformance of ESPN Projections")
+        under = stats["min_over_season"]
+        st.write(f"{under['team']} underperformed projections by {under['over_under']} points in {under['season']}")
 
     with tab3:
         team_profile_tab(teams, matchups)
