@@ -3,13 +3,12 @@ import sqlite3
 import pandas as pd
 import altair as alt
 import streamlit as st
+import requests
 import pdb
 
 # Set page config
 st.set_page_config(page_title="Fantasy Win/Loss Dashboard", layout="centered")
 
-
-@st.cache_data
 def load_data():
     """Load SQLite data once and cache it."""
     connection = sqlite3.connect("fantasy.db")
@@ -198,6 +197,66 @@ def league_history_stats(teams, matchups):
 
     return results
 
+def league_history_tab(teams, matchups):
+    st.header("League History")
+    stats = league_history_stats(teams, matchups)
+
+    st.subheader("Past League Champions")
+    st.table(stats["champions"])
+
+    st.subheader("Regular Season Winners")
+    st.table(stats["one_seeds"][["season", "team", "record", "win_pct"]])
+
+    st.subheader("Regular Season Losers")
+    st.table(stats["sackos"][["season", "team", "record", "win_pct"]])
+
+    st.subheader("Overall Career Win Percentage")
+    chart1 = alt.Chart(stats["overall_win_loss"]).mark_bar().encode(
+        x=alt.X('win_pct', title='Win Percentage'),
+        y=alt.Y('team', sort='-x', title='Team'),
+        tooltip=['team', 'wins', 'losses', 'win_pct']
+    ).properties(height=400)
+    st.altair_chart(chart1, use_container_width=True)
+
+    st.subheader("Top Scorers Per Season")
+    st.table(stats["max_points_season_per_year"][["season", "team", "points"]])
+
+    st.header("Record Book")
+
+    most_wins_df = stats["most_wins_seasons"]
+
+    if most_wins_df.empty:
+        st.write("No data available.")
+    else:
+        tie = len(most_wins_df) > 1
+        header = "**Most Wins in a Single Season:**"
+        if tie:
+            header += " **(tie)**"
+        records = [
+            f"{row['team']} won {row['wins']} games in {row['season']}"
+            for _, row in most_wins_df.iterrows()
+        ]
+        st.write(f"{header} " + "; ".join(records))
+
+
+    max_season = stats["max_points_season_overall"]
+    st.write(f"**Most Points Scored in a Single Season:** {max_season['team']} scored {max_season['points']} points in {max_season['season']}")
+
+    max_week = stats["max_points_week"]
+    st.write(f"**Most Points Scored in a Single Week:** {max_week['team']} scored {max_week['points']} points in Week {max_week['matchup_week']}, {max_week['season']}")
+
+    max_game = stats["max_margin_game"]
+    st.write(
+        f"**Largest Margin of Victory in a Single Game:** {max_game['winner']} defeated {max_game['loser']} by {max_game['margin']} points "
+        f"in Week {max_game['matchup_week']} of {max_game['season']}"
+    )
+
+    over = stats["max_over_season"]
+    st.write(f"**Highest Single Season Overperformance of ESPN Projections:** {over['team']} outperformed projections by {over['over_under']} points in {over['season']}")
+
+    under = stats["min_over_season"]
+    st.write(f"**Highest Single Season Underperformance of ESPN Projections:** {under['team']} underperformed projections by {under['over_under']} points in {under['season']}")
+
 def team_profile_tab(teams, matchups):
     st.header("Team Profile")
 
@@ -234,11 +293,11 @@ def team_profile_tab(teams, matchups):
     ).reset_index()
 
     # Show results
-    st.subheader("📅 Regular Season Record")
+    st.subheader("Regular Season Record")
     st.dataframe(regular_grouped)
     
 
-    st.subheader("🏆 Playoff Record")
+    st.subheader("Playoff Record")
     if not playoff_grouped.empty:
         st.dataframe(playoff_grouped)
         
@@ -276,23 +335,18 @@ def team_profile_tab(teams, matchups):
         use_container_width=True
     )
 
-     # --- Weekly Scores ---
-    st.header("📈 Weekly Scores Over Time")
+    st.header("Weekly Scores Over Time")
 
-    # Calculate team score per game
     team_games["score"] = team_games.apply(
         lambda row: row["home_score"] if row["home_last_name"] == selected_team else row["away_score"], axis=1
     )
 
-    # Create a clean, sortable label
     team_games["week_label"] = (
         team_games["season"].astype(str) + " - Wk " + team_games["matchup_week"].astype(str)
     )
 
-    # Create a sortable index to ensure the correct order
     team_games["sort_order"] = team_games["season"] * 100 + team_games["matchup_week"]
 
-    # Build Altair chart
     chart = alt.Chart(team_games).mark_line(point=True).encode(
         x=alt.X("week_label:N", sort=team_games.sort_values("sort_order")["week_label"].tolist(), title="Week"),
         y=alt.Y("score:Q", title="Score"),
@@ -304,7 +358,7 @@ def team_profile_tab(teams, matchups):
 
     st.altair_chart(chart, use_container_width=True)
 
-    st.header("🤝 Head-to-Head Record")
+    st.header("Head-to-Head Record")
     team_games["opponent"] = team_games.apply(
         lambda row: row["away_last_name"] if row["home_last_name"] == selected_team else row["home_last_name"], axis=1
     )
@@ -314,8 +368,7 @@ def team_profile_tab(teams, matchups):
     ).reset_index().sort_values(by="wins", ascending=False)
     st.dataframe(h2h)
 
-     # --- Big Games ---
-    st.header("🔥 Big Games")
+    st.header("Big Games")
     team_games["margin"] = team_games.apply(
         lambda row: abs(row["home_score"] - row["away_score"]) if (
         (row["home_last_name"] == selected_team and row["home_score"] > row["away_score"]) or
@@ -325,9 +378,8 @@ def team_profile_tab(teams, matchups):
     big_wins = team_games[team_games["margin"] > 0].sort_values(by="margin", ascending=False).head(5)
     st.dataframe(big_wins[["season", "matchup_week", "home_last_name", "away_last_name", "home_score", "away_score", "margin"]])
 
-    st.header("📊 Total Points For and Against by Season")
+    st.header("Total Points For and Against by Season")
 
-    # Compute points for and against per game
     team_games["points_for"] = team_games.apply(
         lambda row: row["home_score"] if row["home_last_name"] == selected_team else row["away_score"],
         axis=1
@@ -337,7 +389,6 @@ def team_profile_tab(teams, matchups):
         axis=1
     )
 
-    # Group by season and sum points
     trend_df = team_games.groupby("season").agg(
         **{
             "Points For": ("points_for", "sum"),
@@ -345,18 +396,14 @@ def team_profile_tab(teams, matchups):
         }
     ).reset_index()
 
-    # Make season a string for categorical x-axis
     trend_df["season"] = trend_df["season"].astype(str)
 
-    # Melt for Altair
     melted = trend_df.melt(id_vars=["season"], 
                         value_vars=["Points For", "Points Against"],
                         var_name="Type", value_name="Total Points")
 
-    # Create a new x-axis category combining season and type for alternating bars
     melted["season_type"] = melted["season"].astype(str) + " - " + melted["Type"]
 
-    # Set up the order for x-axis so bars alternate in chronological order
     season_type_order = []
     for s in sorted(melted["season"].unique()):
         season_type_order.append(f"{s} - Points For")
@@ -387,79 +434,55 @@ def team_profile_tab(teams, matchups):
 
     st.altair_chart(chart, use_container_width=True)
 
+def draft_history_tab(drafts):
+    st.header("Draft History by Season")
+
+    if "season" not in drafts.columns:
+        st.warning("No season column found in draft data.")
+        return
+
+    all_seasons = sorted(drafts["season"].unique())
+    selected_season = st.selectbox("Select a Season", all_seasons)
+ 
+    season_drafts = drafts[drafts["season"] == selected_season]
+
+    team_col = "team_last_name"
+    if team_col not in season_drafts.columns:
+        st.warning(f"No '{team_col}' column found in draft data.")
+        return
+
+    teams_in_season = sorted(season_drafts[team_col].unique())
+    selected_team = st.selectbox("Select a Team", ["All Teams"] + teams_in_season)
+
+    if selected_team != "All Teams":
+        season_drafts = season_drafts[season_drafts[team_col] == selected_team]
+
+
+    sort_cols = [col for col in ["round", "pick"] if col in season_drafts.columns]
+    if sort_cols:
+        season_drafts = season_drafts.sort_values(by=sort_cols)
+
+    st.dataframe(season_drafts.reset_index(drop=True), use_container_width=True)
+
+
 def main():
     st.title("Bozwell Fantasy Football Website")
-
     teams, matchups, drafts = load_data()
-
-    # Define tabs
     tab1, tab2, tab3, tab4 = st.tabs(["Rulebook", "League History", "Team Profile", "Draft History"])
 
     with tab1:
         with open('rulebook.md', 'r', encoding='utf-8') as f:
             markdown_content = f.read()
         st.markdown(markdown_content, unsafe_allow_html=True)
-        
 
     with tab2:
-        st.header("League History")
-        stats = league_history_stats(teams, matchups)
-
-        st.subheader("Past League Champions")
-        st.table(stats["champions"])
-
-        st.subheader("Regular Season Winners")
-        st.table(stats["one_seeds"][["season", "team", "record", "win_pct"]])
-
-        st.subheader("Regular Season Losers")
-        st.table(stats["sackos"][["season", "team", "record", "win_pct"]])
-
-        st.subheader("Overall Career Win Percentage")
-        chart1 = alt.Chart(stats["overall_win_loss"]).mark_bar().encode(
-            x=alt.X('win_pct', title='Win Percentage'),
-            y=alt.Y('team', sort='-x', title='Team'),
-            tooltip=['team', 'wins', 'losses', 'win_pct']
-        ).properties(height=400)
-        st.altair_chart(chart1, use_container_width=True)
-
-        st.subheader("Top Scorers Per Season")
-        st.table(stats["max_points_season_per_year"][["season", "team", "points"]])
-
-        st.header("Record Book")
-
-        st.subheader("Most Wins in a Single Season")
-        most_wins_df = stats["most_wins_seasons"]
-
-        if most_wins_df.empty:
-            st.write("No data available.")
-        else:
-            st.dataframe(most_wins_df)
-
-        st.subheader("Most Points Scored in a Single Season (Overall)")
-        max_season = stats["max_points_season_overall"]
-        st.write(f"{max_season['team']} scored {max_season['points']} points in {max_season['season']}")
-
-        st.subheader("Most Points Scored in a Single Week")
-        max_week = stats["max_points_week"]
-        st.write(f"{max_week['team']} scored {max_week['points']} points in Week {max_week['matchup_week']}, {max_week['season']}")
-
-        st.subheader("Largest Margin of Victory in a Single Game")
-        max_game = stats["max_margin_game"]
-        st.write(
-            f"{max_game['winner']} defeated {max_game['loser']} by {max_game['margin']} points "
-            f"in Week {max_game['matchup_week']} of {max_game['season']}"
-        )
-
-        st.subheader("Highest Single Season Overperformance of ESPN Projections")
-        over = stats["max_over_season"]
-        st.write(f"{over['team']} outperformed projections by {over['over_under']} points in {over['season']}")
-
-        st.subheader("Highest Single Season Underperformance of ESPN Projections")
-        under = stats["min_over_season"]
-        st.write(f"{under['team']} underperformed projections by {under['over_under']} points in {under['season']}")
+        league_history_tab(teams, matchups)
 
     with tab3:
         team_profile_tab(teams, matchups)
+
+    with tab4:
+        draft_history_tab(drafts)
 
 
 if __name__ == "__main__":

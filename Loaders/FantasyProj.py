@@ -1,20 +1,23 @@
 import sqlite3
 from espn_api.football import League
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+LEAGUEID = int(os.getenv("LEAGUE_ID"))
+SWID = os.getenv("SWID")
+ESPN_S2 = os.getenv("ESPN_S2")
 
 def scrape_historical():
     all_teams = []
     all_matchups = []
     all_drafts = []
-    # Setting up private league parameters for API requests
-    LEAGUEID = 837832625
-    SWID = '{B2939343-C4CE-4520-9B01-87E084C30314}'
-    ESPN_S2 = 'AEA5EHawYmSZ4jmAO701RNO8F%2F93IF3jDDIPKWXMJc4urLQc1G1fxKlkdEo4qsjR5RVlkJE43yoRH1IZsCeGjpqJRJbeu3E6bZ8sE%2Ff1yCgJPKapoIlXEr5HchNkf9%2FsmtlXjpSCn5mbtiHmS5FYBDZSf1PCFGnldkPExDL4ZFjqK36jEZa9BLXv7Fe0%2Fe3pgkWaN1wpy51ClC5uqpfGujkA3vvJvWFJRLYgDEs7O1HRwT%2FUUOL%2F1Y7qK17%2Fnw6ytHwe%2B5Kr4gBbh8ok1yyNB%2B63vDcb5pzlFXZ%2FY%2BiV7ZEOoA%3D%3D'
 
     for year in range(2021, 2025):
         league = League(league_id=LEAGUEID, year=year, espn_s2=ESPN_S2, swid=SWID)
-        all_teams.extend(teams_loader(league))     # returns list of dicts
-        all_matchups.extend(matchup_loader(league, year))  # returns list of dicts
-        all_drafts.extend(drafts_loader(league, year))   # returns list of dicts
+        all_teams.extend(teams_loader(league))
+        all_matchups.extend(matchup_loader(league, year))
+        all_drafts.extend(drafts_loader(league, year))
 
     return all_teams, all_matchups, all_drafts
 
@@ -112,12 +115,14 @@ def drafts_loader(league, year):
         team_last = pick.team.owners[0]["lastName"].upper()
         if team_last == "THE GREAT":
             team_last = "JAIME"
+        player_name = getattr(pick, "playerName", None) or "UNKNOWN PLAYER"
         entry = {
             "player_id": pick.playerId,
             "team_last_name": team_last,
             "season": year,
             "draft_round": pick.round_num,
-            "draft_pick": pick.round_pick
+            "draft_pick": pick.round_pick,
+            "player_name": player_name
         }
         draft_entries.append(entry)
     return draft_entries
@@ -170,16 +175,13 @@ def load_db(db_file, teams, matchups, drafts):
     for draft in drafts:
         try:
             cursor.execute("""
-                INSERT INTO drafts (
-                    player_id, team_last_name,
-                    season, draft_round, draft_pick
-                ) VALUES (?, ?, ?, ?, ?)
-            """, (
+                INSERT INTO drafts (player_id, team_last_name, season, draft_round, draft_pick, player_name) VALUES (?, ?, ?, ?, ?, ?)""", (
                 draft["player_id"],
                 draft["team_last_name"],
                 draft["season"],
                 draft["draft_round"],
-                draft["draft_pick"]
+                draft["draft_pick"],
+                draft["player_name"]
             ))
         except sqlite3.Error as e:
             print(f"Draft insert error (Player ID {draft['player_id']}): {e}")

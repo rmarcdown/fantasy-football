@@ -25,7 +25,8 @@ CREATE TABLE drafts (
     team_last_name VARCHAR(256) NOT NULL,
     season INTEGER NOT NULL,
     draft_round INTEGER,
-    draft_pick INTEGER,          
+    draft_pick INTEGER,
+    player_name VARCHAR(256),
     FOREIGN KEY (team_last_name) REFERENCES teams(lastName)
 );
 
@@ -38,5 +39,3 @@ CREATE TABLE keepers (
     keeper_round INTEGER,        -- round used this season
     FOREIGN KEY (team_last_name) REFERENCES teams(lastName)
 );
-
-
